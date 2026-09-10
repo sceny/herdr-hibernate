@@ -240,6 +240,50 @@ class WatcherGuardTests(unittest.TestCase):
                 age = hibernate.transcript_age_minutes(self.SID, "claude")
             self.assertIsNone(age)  # no main transcript -> never killed anyway
 
+    # -- resume stamp: exec keeps the stub's start time, the stamp corrects it
+
+    def test_resumed_agent_age_uses_the_stub_stamp_not_the_process_clock(self):
+        hibernate.write_resume_stamp("w1:p1")
+        with mock.patch.object(hibernate, "proc_uptime_minutes",
+                               return_value=3 * 24 * 60.0):  # stub waited 3 days
+            age = hibernate.agent_age_minutes(4242, "w1:p1")
+        self.assertIsNotNone(age)
+        self.assertLess(age, 1.0)
+
+    def test_agent_age_without_a_stamp_is_the_process_age(self):
+        with mock.patch.object(hibernate, "proc_uptime_minutes",
+                               return_value=42.0):
+            self.assertEqual(hibernate.agent_age_minutes(4242, "w1:p1"), 42.0)
+
+    def test_stale_stamp_loses_to_a_younger_process(self):
+        # A stub fired long ago; the user later started a fresh agent by hand.
+        os.makedirs(hibernate.PANES_DIR, exist_ok=True)
+        with open(hibernate.resume_stamp_path("w1:p1"), "w") as fh:
+            fh.write(time.strftime("%Y-%m-%d %H:%M:%S",
+                                   time.localtime(time.time() - 5 * 3600)))
+        with mock.patch.object(hibernate, "proc_uptime_minutes",
+                               return_value=7.0):
+            self.assertEqual(hibernate.agent_age_minutes(4242, "w1:p1"), 7.0)
+
+    def test_label_awake_writes_the_stamp_even_without_a_record(self):
+        hibernate.cmd_label_awake("w1:p1")
+        self.assertTrue(os.path.exists(hibernate.resume_stamp_path("w1:p1")))
+
+    def test_stamp_survives_resume_but_not_the_panes_closing(self):
+        hibernate.write_resume_stamp("w1:p1")
+        hibernate.write_resume_stamp("w1:p2")
+        # p1 still open (record already cleared by RESUMED), p2's tab is gone.
+        hibernate.gc_stub_files({}, panes=[{"pane_id": "w1:p1"}])
+        self.assertTrue(os.path.exists(hibernate.resume_stamp_path("w1:p1")))
+        self.assertFalse(os.path.exists(hibernate.resume_stamp_path("w1:p2")))
+        hibernate.gc_stub_files({})  # no pane list: stamps are never touched
+        self.assertTrue(os.path.exists(hibernate.resume_stamp_path("w1:p1")))
+
+    def test_forget_record_drops_the_stamp(self):
+        hibernate.write_resume_stamp("w1:p1")
+        hibernate.forget_record("w1:p1", {"w1:p1": {"label": "x"}}, "tab closed")
+        self.assertFalse(os.path.exists(hibernate.resume_stamp_path("w1:p1")))
+
     def test_late_started_child_is_a_busy_background_job(self):
         procs = {
             100: (1, 0, "claude"),

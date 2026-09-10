@@ -161,6 +161,7 @@ Everything lives under `~/.config/herdr-hibernate/`:
 |---|---|---|
 | `state.json` | One record per **currently hibernated** pane: session uuid, tab id, cwd, label. | Deleted when the pane resumes or the tab closes. |
 | `panes/<pane_id>.sh` | That pane's stub script — what survives reboots. | Deleted with its record. |
+| `panes/<pane_id>.resumed` | When that pane's stub last fired (one timestamp). | Deleted when the pane is hibernated again or its tab closes. |
 | `hibernate.log` | What the tool did. | Size-capped by `LOG_MAX_KB`, one rotation. |
 | `config` | Your settings. | Permanent (it's yours). |
 
@@ -242,6 +243,9 @@ wake-up always lands before the pane can qualify.
 - Panes with no session uuid or no transcript file (they could not be resumed,
   so they are never killed).
 - Panes already hibernated (stub waiting).
+- An agent that started or resumed less than `HIBERNATE_AFTER_MINUTES` ago.
+  A resumed session's transcript is still old (loading history writes
+  nothing), so without this it would be killed again on the very next scan.
 
 ## How hibernation works
 
@@ -273,6 +277,11 @@ Press Enter in the pane. The stub restores the tab label and
   itself — if the resume fails, the pane stays armed and can be retried.
 - **Ctrl-C** at the banner dismisses the stub and gives you a plain shell
   (it prints the `claude --resume <uuid>` command first, so nothing is lost).
+- The stub stamps `panes/<pane_id>.resumed` as it fires. The reaper uses that
+  stamp, not the process start time, to tell a fresh resume from an old
+  session: `exec` keeps the stub's start time, so a stub that waited three
+  days would otherwise make a ten-second-old claude look three days old and
+  get it killed on the next scan.
 
 ## Surviving restarts
 

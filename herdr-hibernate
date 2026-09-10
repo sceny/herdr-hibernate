@@ -877,6 +877,48 @@ def remove_stub_file(pane_id):
         pass
 
 
+def resume_stamp_path(pane_id):
+    """Marker written the moment a pane's stub fires, beside its stub script."""
+    return pane_file(pane_id)[:-len(".sh")] + ".resumed"
+
+
+def write_resume_stamp(pane_id):
+    os.makedirs(PANES_DIR, exist_ok=True)
+    with open(resume_stamp_path(pane_id), "w") as fh:
+        fh.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def resume_stamp_minutes(pane_id):
+    """Minutes since this pane's stub last fired, or None if it never did."""
+    try:
+        with open(resume_stamp_path(pane_id)) as fh:
+            return since_minutes(fh.read().strip())
+    except OSError:
+        return None
+
+
+def remove_resume_stamp(pane_id):
+    try:
+        os.remove(resume_stamp_path(pane_id))
+    except OSError:
+        pass
+
+
+def agent_age_minutes(pid, pane_id):
+    """Minutes the pane's agent has really been running, or None if unknown.
+
+    The process start time alone lies after a resume: the stub `exec`s the
+    agent, and exec keeps the stub's own start time — a stub that waited three
+    days makes a ten-second-old claude look three days old. The stub stamps
+    the pane when it fires (via `label-awake`), so the younger of the two
+    clocks is the truth. A stamp older than the process belongs to an earlier
+    resume and loses.
+    """
+    ages = [a for a in (proc_uptime_minutes(pid), resume_stamp_minutes(pane_id))
+            if a is not None]
+    return min(ages) if ages else None
+
+
 def stub_command(pane_id):
     """Command that arms the pane's stub as a CHILD of the pane shell.
 
@@ -1063,8 +1105,9 @@ def hibernate_pane(pane, tab_labels, cfg, state, idle_str, dry_run, force=False)
 
     # A session resumed a moment ago still has an old last-message timestamp
     # (loading history writes nothing), so it looks ancient. It cannot be idler
-    # than its own process is old.
-    up = proc_uptime_minutes(pid)
+    # than its own process is old — measured by agent_age_minutes, because the
+    # raw process start time is the stub's after an exec.
+    up = agent_age_minutes(pid, pane_id)
     threshold = float(cfg["HIBERNATE_AFTER_MINUTES"])
     if not force and up is not None and up < threshold:
         log("SKIP %s (%s): %s only started %s ago (likely just resumed)" % (
@@ -1092,6 +1135,7 @@ def hibernate_pane(pane, tab_labels, cfg, state, idle_str, dry_run, force=False)
         return False
 
     time.sleep(1.0)  # let the pane shell come back to its prompt
+    remove_resume_stamp(pane_id)  # the next stub writes a fresh one
     cwd = pane.get("cwd") or os.path.expanduser("~")
     original_label, marked_label, marker_added = marker_record(label, tab_id, state)
     rec = {
@@ -1127,13 +1171,23 @@ def forget_record(pane_id, state, why):
     rec = state.pop(pane_id, None)
     save_state(state)
     remove_stub_file(pane_id)
+    remove_resume_stamp(pane_id)
     log("FORGOT %s (%s): %s" % (rec.get("label", "?") if rec else "?",
                                 pane_id, why))
 
 
-def gc_stub_files(state):
-    """Delete stub scripts that no longer belong to a tracked pane."""
+def gc_stub_files(state, panes=None):
+    """Delete stub scripts that no longer belong to a tracked pane.
+
+    Resume stamps outlive their record on purpose (the record goes the moment
+    the agent is seen live; the stamp must still guard that agent), so they are
+    only dropped once their pane is gone — and only when a pane list is given.
+    """
     expected = {os.path.basename(pane_file(p)) for p in state}
+    live_stamps = None
+    if panes is not None:
+        live_stamps = {os.path.basename(resume_stamp_path(p["pane_id"]))
+                       for p in panes}
     try:
         names = os.listdir(PANES_DIR)
     except OSError:
@@ -1144,6 +1198,12 @@ def gc_stub_files(state):
                 os.remove(os.path.join(PANES_DIR, name))
                 log("GC stub script %s (no matching pane record)" % name,
                     echo=False)
+            except OSError:
+                pass
+        elif (name.endswith(".resumed") and live_stamps is not None
+              and name not in live_stamps):
+            try:
+                os.remove(os.path.join(PANES_DIR, name))
             except OSError:
                 pass
 
@@ -1272,7 +1332,7 @@ def restore_records(panes, tab_labels, state, dry_run=False, forget_after=15.0):
         log("RESTORED %s (%s): re-armed stub for session %s" % (
             label, pane_id, rec["uuid"]))
     if not dry_run:
-        gc_stub_files(state)
+        gc_stub_files(state, panes)
     return restored
 
 
@@ -1451,7 +1511,12 @@ def cmd_forget(pane_id, resumed=False):
 
 
 def cmd_label_awake(pane_id):
-    """Restore this record's exact tool-owned tab label without clearing state."""
+    """Restore this record's exact tool-owned tab label without clearing state.
+
+    Every stub calls this right before it execs the agent, so it is also where
+    the pane's resume stamp is written (see agent_age_minutes).
+    """
+    write_resume_stamp(pane_id)
     state = load_state()
     rec = state.get(pane_id)
     if not rec:
