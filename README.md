@@ -90,6 +90,7 @@ past the threshold — and re-checks the status immediately before killing.
 ./herdr-hibernate forget w2:p3       # drop a pane's hibernation record + stub
 ./herdr-hibernate install            # shell hook + background watcher
 ./herdr-hibernate uninstall          # stop + remove the background watcher
+./herdr-hibernate update             # pull the newest version, restart the watcher, re-link
 ```
 
 Run it from inside a Herdr-managed pane (`HERDR_ENV=1`) so the CLI reaches the
@@ -144,11 +145,11 @@ take effect without a restart.
 | `PINNED_TABS` | *(empty)* | Space-separated tab ids, never hibernated. |
 | `DRY_RUN` | `1` | `1` = log only, touch nothing. Set `0` only after reviewing the log. |
 | `KILL_GRACE_SECONDS` | `5` | Wait after SIGTERM before SIGKILL-ing survivors. |
-
 | `FORGET_AFTER_MINUTES` | `15` | Grace period before a vanished pane's data is erased. `0` = erase on first sight. |
 | `LOG_MAX_KB` | `512` | Rotate the log past this size (one backup kept). |
 | `BUSY_CHILD_MINUTES` | `3` | A child process started this many minutes after its agent marks the pane as running a background job — never hibernated while it lives. `0` disables. |
 | `BUSY_IGNORE_TOKENS` | `mcp` | Space-separated case-insensitive substrings; matching child processes are ignored by the background-job check. |
+| `UPDATE_CHECK_HOURS` | `24` | How often the watcher checks GitHub for a newer version. It only announces one (log + toast), never installs it. `0` disables. |
 
 New keys added by an upgrade are appended to your existing config file, with
 their comments and defaults — your own values are never overwritten.
@@ -321,6 +322,32 @@ from you. To check it worked:
 
 ```bash
 ./herdr-hibernate status     # every hibernated pane should read [stub armed]
+```
+
+## Updating
+
+```bash
+./herdr-hibernate update        # or the Herdr action "Hibernate: update plugin"
+```
+
+One step: it fetches the newest version into the plugin's own checkout,
+restarts the watcher so the new code is actually running, and re-links the
+plugin so Herdr shows the new version and any new actions. Works for both a
+Herdr-managed install (detached commit) and a plain `git clone` (fast-forward).
+Local edits are never overwritten — it refuses and tells you.
+
+The watcher checks GitHub once a day (`UPDATE_CHECK_HOURS`). When a newer
+version exists it writes an `UPDATE available` line to the log and shows a
+Herdr toast. It never installs anything on its own. `status` also prints the
+hint once a check has seen a newer version.
+
+Coming from **1.1.x** (no `update` command yet): reinstall once, then use
+`update` from there on. Hibernated panes are untouched by a reinstall — their
+records and stubs live in `~/.config/herdr-hibernate/`, not in the plugin dir.
+
+```bash
+herdr plugin uninstall bengemine.hibernate
+herdr plugin install bengemine/herdr-hibernate --yes
 ```
 
 ## Limitations

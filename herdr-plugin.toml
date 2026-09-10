@@ -1,6 +1,6 @@
 id = "bengemine.hibernate"
 name = "Herdr Hibernate"
-version = "1.1.2"
+version = "1.2.0"
 min_herdr_version = "0.7.0"
 description = "Hibernate idle Claude Code, Codex, and Grok panes to ~0 RAM — kill the process tree, leave a tiny resume stub, press Enter to get the exact session back."
 # Tested on Linux and WSL2. macOS is untested: the background watcher falls back
@@ -48,3 +48,9 @@ id = "uninstall"
 title = "Hibernate: remove watcher + shell hook"
 contexts = ["workspace"]
 command = ["./herdr-hibernate", "uninstall"]
+
+[[actions]]
+id = "update"
+title = "Hibernate: update plugin"
+contexts = ["workspace"]
+command = ["./herdr-hibernate", "update"]

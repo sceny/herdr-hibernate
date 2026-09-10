@@ -27,6 +27,7 @@ class HibernateTests(unittest.TestCase):
             PID_FILE=os.path.join(root, "watch.pid"),
             WATCH_LOCK_FILE=os.path.join(root, "watch.lock"),
             OPERATION_LOCK_FILE=os.path.join(root, "operation.lock"),
+            UPDATE_CHECK_FILE=os.path.join(root, "update-check"),
         )
         self.paths.start()
 
@@ -192,6 +193,11 @@ class HibernateTests(unittest.TestCase):
 
 
 class WatcherGuardTests(unittest.TestCase):
+    # Every test class must redirect the tool's paths: a test that runs against
+    # the real ~/.config/herdr-hibernate wipes real hibernation records.
+    setUp = HibernateTests.setUp
+    tearDown = HibernateTests.tearDown
+
     """Guards that keep a watching orchestrator from being hibernated."""
 
     SID = "11111111-1111-1111-1111-111111111111"
@@ -283,6 +289,50 @@ class WatcherGuardTests(unittest.TestCase):
         hibernate.write_resume_stamp("w1:p1")
         hibernate.forget_record("w1:p1", {"w1:p1": {"label": "x"}}, "tab closed")
         self.assertFalse(os.path.exists(hibernate.resume_stamp_path("w1:p1")))
+
+    # -- update check: announce only, at most once per UPDATE_CHECK_HOURS
+
+    def test_update_check_runs_once_per_interval_and_announces(self):
+        cfg = self._cfg(UPDATE_CHECK_HOURS="24")
+        calls = []
+
+        def fake_git(*args, **kw):
+            calls.append(args)
+            if args[0] == "fetch":
+                return ""
+            if args[:2] == ("rev-parse", "--verify"):
+                return "abc" if args[3] == "origin/main" else None
+            if args[0] == "rev-list":
+                return "2"
+            if args[0] == "show":
+                return 'version = "9.9.9"\n'
+            return None
+
+        with mock.patch.object(hibernate, "git", side_effect=fake_git), \
+                mock.patch.object(hibernate, "toast") as toast, \
+                mock.patch.object(hibernate, "plugin_version",
+                                  side_effect=lambda rev=None: "9.9.9" if rev else "1.0.0"):
+            hibernate.maybe_check_update(cfg)
+            hibernate.maybe_check_update(cfg)  # same day: no second fetch
+        self.assertEqual(sum(1 for c in calls if c[0] == "fetch"), 1)
+        toast.assert_called_once()
+        self.assertIn("9.9.9", toast.call_args[0][0])
+        self.assertIn("UPDATE available: 9.9.9", open(hibernate.LOG_FILE).read())
+
+    def test_update_check_disabled_by_zero(self):
+        with mock.patch.object(hibernate, "git") as git:
+            hibernate.maybe_check_update(self._cfg(UPDATE_CHECK_HOURS="0"))
+        git.assert_not_called()
+        self.assertFalse(os.path.exists(hibernate.UPDATE_CHECK_FILE))
+
+    def test_unreachable_origin_is_quiet_and_does_not_retry_every_scan(self):
+        cfg = self._cfg(UPDATE_CHECK_HOURS="24")
+        with mock.patch.object(hibernate, "git", return_value=None) as git, \
+                mock.patch.object(hibernate, "toast") as toast:
+            hibernate.maybe_check_update(cfg)
+            hibernate.maybe_check_update(cfg)
+        self.assertEqual(git.call_count, 1)
+        toast.assert_not_called()
 
     def test_late_started_child_is_a_busy_background_job(self):
         procs = {
